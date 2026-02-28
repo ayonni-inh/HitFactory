@@ -1,0 +1,7 @@
+{
+  "name": "HitFactory 1.0",
+  "description": "A pocket-sized web DAW for recording vocals, producing hits, and applying AI-powered mixing effects.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

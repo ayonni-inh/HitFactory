@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-studio-950: #050505;
+  --color-studio-900: #0f0f11;
+  --color-studio-800: #1a1a1e;
+  --color-studio-700: #2a2a2f;
+  --color-studio-600: #3a3a40;
+  --color-studio-500: #52525b;
+  --color-studio-accent: #8b5cf6;
+  --color-studio-accent-hover: #7c3aed;
+  --color-studio-success: #10b981;
+  --color-studio-danger: #ef4444;
+  --color-studio-warning: #f59e0b;
+  
+  --shadow-hardware: 0 10px 30px -5px rgba(0, 0, 0, 0.5), 0 4px 10px -5px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 15px rgba(139, 92, 246, 0.3);
+}
+
+@layer base {
+  body {
+    @apply bg-studio-950 text-zinc-300 antialiased selection:bg-studio-accent selection:text-white;
+  }
+}
+
+@layer components {
+  .hardware-panel {
+    @apply bg-studio-900 border border-studio-800 rounded-xl shadow-hardware;
+  }
+  
+  .hardware-inset {
+    @apply bg-studio-950 border border-studio-800/50 rounded-lg shadow-inner;
+  }
+  
+  .lcd-display {
+    @apply font-mono text-studio-accent bg-studio-950 border border-studio-800 rounded px-2 py-1 shadow-inner;
+  }
+  
+  .btn-hardware {
+    @apply px-4 py-2 rounded-lg font-bold text-xs transition-all active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
+  }
+  
+  .btn-primary {
+    @apply px-4 py-2 rounded-lg font-bold text-xs transition-all active:scale-95 disabled:opacity-50 disabled:pointer-events-none bg-studio-accent text-white hover:bg-studio-accent-hover shadow-lg shadow-studio-accent/20;
+  }
+  
+  .btn-secondary {
+    @apply px-4 py-2 rounded-lg font-bold text-xs transition-all active:scale-95 disabled:opacity-50 disabled:pointer-events-none bg-studio-800 text-zinc-300 hover:bg-studio-700 border border-studio-700;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-studio-800 rounded-full border-2 border-studio-950;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-studio-700;
+}
+
+.knob-container {
+  filter: drop-shadow(0 4px 6px rgb(0 0 0 / 0.4));
+}
+
+input[type=range] {
+  -webkit-appearance: none;
+  background: transparent;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  @apply h-4 w-4 rounded-full bg-zinc-100 mt-[-6px] shadow-md border border-studio-800 cursor-pointer;
+}
+input[type=range]::-webkit-slider-runnable-track {
+  @apply w-full h-1 bg-studio-800 rounded-full;
+}
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
