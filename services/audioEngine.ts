@@ -484,15 +484,12 @@ class AudioEngine {
       if (!this.ctx) await this.init();
       
       let maxDuration = 0;
-      tracks.forEach(t => {
-          const end = t.startTime + t.duration;
-          if (end > maxDuration) maxDuration = end;
-      });
-      
-      if (maxDuration === 0) return new Blob();
-      
-      const sampleRate = this.ctx!.sampleRate;
-      const offlineCtx = new OfflineAudioContext(2, Math.ceil(sampleRate * maxDuration), sampleRate);
+     tracks.forEach(track => {
+      const buffer = this.getTrackBuffer(track.id);
+      if (!buffer || track.isMuted) return;
+
+      const source = this.ctx!.createBufferSource();
+      source.buffer = buffer;
       
       // Master Chain
       const masterEqLow = offlineCtx.createBiquadFilter();
@@ -558,13 +555,13 @@ class AudioEngine {
           compressor.threshold.value = track.effects.compression.threshold;
           compressor.ratio.value = track.effects.compression.ratio;
           
-          source.connect(trackGain);
-          trackGain.connect(panner);
-          panner.connect(eqLow);
-          eqLow.connect(eqMid);
-          eqMid.connect(eqHigh);
-          eqHigh.connect(compressor);
-          compressor.connect(masterEqLow);
+        source.connect(eqLow);
+        eqLow.connect(eqMid);
+        eqMid.connect(eqHigh);
+        eqHigh.connect(compressor);
+        compressor.connect(trackGain);
+        trackGain.connect(panner);
+        panner.connect(masterEqLow);
           
           source.start(track.startTime, track.offset);
       }
