@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Play, Pause, Mic, Upload, Plus, Save, Music, Headphones, 
-  Sliders, Clock, Layers, Timer, Gauge, X, Repeat, Activity as ActivityIcon,
+  Sliders, Clock, Layers, Timer, Gauge, X, Repeat, <Activity size={14} />,
   SkipBack, Square 
 } from 'lucide-react';
 import { Track, RecorderState, TrackEffects, MasteringSettings, LoopSettings, QuantizationValue } from './types';
