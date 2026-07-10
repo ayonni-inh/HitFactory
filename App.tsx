@@ -600,15 +600,16 @@ export default function App() {
         setIsPlaying(true);
 
         // 7. Auto-Stop Duration
-        if (recordDuration !== 'free') {
-            const bars = parseInt(recordDuration);
-            const durationMs = (bars * 4) * (60000 / bpm);
-            setTimeout(() => {
-                if (mediaRecorder.current?.state === 'recording') {
-                    stopRecording();
-                }
-            }, durationMs);
+      if (recordDuration !== 'free') {
+    const bars = parseInt(recordDuration);
+    const durationMs = (bars * 4) * (60000 / bpm);
+    const recorderInstance = mediaRecorder.current;
+    setTimeout(() => {
+        if (mediaRecorder.current === recorderInstance && mediaRecorder.current?.state === 'recording') {
+            stopRecording();
         }
+    }, durationMs);
+}
 
     } catch (err) {
         console.error("Error accessing mic:", err);
