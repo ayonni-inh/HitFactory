@@ -484,13 +484,15 @@ class AudioEngine {
       if (!this.ctx) await this.init();
       
       let maxDuration = 0;
-     tracks.forEach(track => {
-      const buffer = this.getTrackBuffer(track.id);
-      if (!buffer || track.isMuted) return;
+      tracks.forEach(t => {
+      if (t.isMuted) return;
+      const start = t.startTime || 0;
+      const dur = t.duration || 0;
+      const end = start + dur;
+      if (end > maxDuration) maxDuration = end;
+});
 
-      const source = this.ctx!.createBufferSource();
-      source.buffer = buffer;
-      
+if (maxDuration === 0) return new Blob();
       // Master Chain
       const masterEqLow = offlineCtx.createBiquadFilter();
       masterEqLow.type = 'lowshelf';
@@ -521,50 +523,56 @@ class AudioEngine {
       masterEqHigh.connect(masterLimiter);
       masterLimiter.connect(masterGain);
       masterGain.connect(offlineCtx.destination);
-      
       for (const track of tracks) {
-          if (track.isMuted) continue;
-          const buffer = this.getTrackBuffer(track.id);
-          if (!buffer) continue;
-          
-          const source = offlineCtx.createBufferSource();
-          source.buffer = buffer;
-          
-          const trackGain = offlineCtx.createGain();
-          trackGain.gain.value = track.volume;
-          
-          const panner = offlineCtx.createStereoPanner();
-          panner.pan.value = track.pan;
-          
-          const eqLow = offlineCtx.createBiquadFilter();
-          eqLow.type = 'lowshelf';
-          eqLow.frequency.value = 320;
-          eqLow.gain.value = track.effects.eq.low;
+    if (track.isMuted) continue;
+    const buffer = this.getTrackBuffer(track.id);
+    if (!buffer) continue;
 
-          const eqMid = offlineCtx.createBiquadFilter();
-          eqMid.type = 'peaking';
-          eqMid.frequency.value = 1000;
-          eqMid.gain.value = track.effects.eq.mid;
+    const source = offlineCtx.createBufferSource();
+    source.buffer = buffer;
 
-          const eqHigh = offlineCtx.createBiquadFilter();
-          eqHigh.type = 'highshelf';
-          eqHigh.frequency.value = 3200;
-          eqHigh.gain.value = track.effects.eq.high;
+    const trackGain = offlineCtx.createGain();
+    trackGain.gain.value = track.volume;
 
-          const compressor = offlineCtx.createDynamicsCompressor();
-          compressor.threshold.value = track.effects.compression.threshold;
-          compressor.ratio.value = track.effects.compression.ratio;
-          
-        source.connect(eqLow);
-        eqLow.connect(eqMid);
-        eqMid.connect(eqHigh);
-        eqHigh.connect(compressor);
-        compressor.connect(trackGain);
-        trackGain.connect(panner);
-        panner.connect(masterEqLow);
-          
-          source.start(track.startTime, track.offset);
-      }
+    const panner = offlineCtx.createStereoPanner();
+    panner.pan.value = track.pan;
+
+    const eqLow = offlineCtx.createBiquadFilter();
+    eqLow.type = 'lowshelf';
+    eqLow.frequency.value = 320;
+    eqLow.gain.value = track.effects.eq.low;
+
+    const eqMid = offlineCtx.createBiquadFilter();
+    eqMid.type = 'peaking';
+    eqMid.frequency.value = 1000;
+    eqMid.gain.value = track.effects.eq.mid;
+
+    const eqHigh = offlineCtx.createBiquadFilter();
+    eqHigh.type = 'highshelf';
+    eqHigh.frequency.value = 3200;
+    eqHigh.gain.value = track.effects.eq.high;
+
+    const compressor = offlineCtx.createDynamicsCompressor();
+    compressor.threshold.value = track.effects.compression.threshold;
+    compressor.ratio.value = track.effects.compression.ratio;
+
+    // Chain now matches play(): source -> EQ -> compressor -> gain -> pan -> master
+    source.connect(eqLow);
+    eqLow.connect(eqMid);
+    eqMid.connect(eqHigh);
+    eqHigh.connect(compressor);
+    compressor.connect(trackGain);
+    trackGain.connect(panner);
+    panner.connect(masterEqLow);
+
+    const start = track.startTime || 0;
+    const offset = track.offset || 0;
+    const duration = track.duration || buffer.duration;
+
+    if (duration > 0) {
+        source.start(start, offset, duration);
+    }
+}
       
       const renderedBuffer = await offlineCtx.startRendering();
       return this.bufferToWave(renderedBuffer, renderedBuffer.length);
