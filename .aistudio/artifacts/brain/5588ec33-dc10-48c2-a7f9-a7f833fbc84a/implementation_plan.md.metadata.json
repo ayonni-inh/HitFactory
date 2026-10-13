@@ -1,0 +1,6 @@
+{
+  "summary": "Architectural blueprint for the mobile-responsive music dashboard and real-time pitch correction interface in AYONI STUDIO. Defines the bottom navigation dock, persistent pinned record button, compact rotary pitch tuner with musical keys and scales, and responsive timeline layout.",
+  "updatedAt": "2026-10-13T13:50:20.669977977Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

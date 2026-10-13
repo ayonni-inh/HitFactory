@@ -1,1263 +1,1310 @@
+// AYONI STUDIO - Professional Multitrack Vocal Recording & Mixing Studio
+// Main Application Coordinator & View Engine
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
 import { 
-  Play, Pause, Mic, Upload, Plus, Save, Music, Headphones, 
-  Sliders, Clock, Layers, Timer, Gauge, X, Repeat, Activity as ActivityIcon,
-  SkipBack, Square, 
-} from 'lucide-react';
-import { Track, RecorderState, TrackEffects, MasteringSettings, LoopSettings, QuantizationValue } from './types';
+  Track, Clip, Take, Marker, Project, RecorderState, 
+  QuantizationValue, MeterLevels, ReferenceTrack, 
+  TrackEffects, MasteringSettings, ReverbBusSettings, DelayBusSettings,
+  TrackType, VocalType
+} from './types';
 import { audioEngine } from './services/audioEngine';
-import { TrackItem } from './components/TrackItem';
-import { Mixer } from './components/Mixer';
-import { WaveformVisualizer } from './components/WaveformVisualizer';
+import { projectDb } from './services/db';
+import { TopBar } from './components/TopBar';
+import { Timeline } from './components/Timeline';
+import { TrackInspector } from './components/TrackInspector';
+import { StudioWorkstation } from './components/StudioWorkstation';
+import { AIAssistantPanel } from './components/AIAssistantPanel';
+import { ExportModal } from './components/ExportModal';
+import { ProjectModal } from './components/ProjectModal';
 
 const DEFAULT_EFFECTS: TrackEffects = {
-  eq: { low: 0, mid: 0, high: 0 },
-  reverb: { mix: 0, decay: 1.5 },
-  delay: { mix: 0, time: 0.2, feedback: 0.3 },
-  compression: { threshold: -20, ratio: 4 },
-  autotune: { enabled: false, amount: 0, key: 'C' }
+  gain: 0,
+  gate: { enabled: false, threshold: -45, reduction: -20 },
+  eq: { enabled: true, low: 0, lowMid: 0, highMid: 0, high: 0 },
+  deesser: { enabled: false, frequency: 6500, threshold: -20, amount: 50 },
+  compression: { enabled: true, threshold: -18, ratio: 4, attack: 0.015, release: 0.16, makeup: 2 },
+  saturation: { enabled: false, drive: 20, warmth: 30 },
+  reverbSend: 0.2,
+  delaySend: 0.1,
+  autotune: { enabled: false, key: 'C', scale: 'minor', speed: 25, amount: 80 }
 };
 
 const DEFAULT_MASTERING: MasteringSettings = {
-    gain: 1.0,
-    eq: { low: 0, mid: 0, high: 0 },
-    limiter: { threshold: -1.0 }
+  gain: 1.05,
+  glueComp: { enabled: true, threshold: -14, ratio: 2.5, attack: 0.03, release: 0.2 },
+  eq: { low: 0.5, mid: 0, high: 1.2 },
+  limiter: { enabled: true, ceiling: -0.2, threshold: -1.8 },
+  targetPreset: 'streaming'
 };
 
-type VocalType = 'main' | 'adlib' | 'double' | 'harmony';
+const DEFAULT_REVERB: ReverbBusSettings = {
+  enabled: true,
+  type: 'plate',
+  decay: 2.4,
+  preDelay: 0.02,
+  mix: 0.8,
+  highCut: 11000
+};
 
-export default function App() {
-  const [tracks, setTracks] = useState<Track[]>([]);
-  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [recorderState, setRecorderState] = useState<RecorderState>(RecorderState.IDLE);
-  const [playbackTime, setPlaybackTime] = useState(0); 
-  
-  const [masteringSettings, setMasteringSettings] = useState<MasteringSettings>(DEFAULT_MASTERING);
-  const [loopSettings, setLoopSettings] = useState<LoopSettings>({ enabled: false, start: 0, end: 10 });
-  const [audioState, setAudioState] = useState<string>('uninitialized');
-  const [quantization, setQuantization] = useState<QuantizationValue>('1/16');
-  const [bpm, setBpm] = useState(120);
+const DEFAULT_DELAY: DelayBusSettings = {
+  enabled: true,
+  time: 0.375,
+  sync: '1/8d',
+  feedback: 0.38,
+  mix: 0.7,
+  pingPong: true,
+  highCut: 4500
+};
 
-  useEffect(() => {
-      const interval = setInterval(() => {
-          const state = audioEngine.getState();
-          if (state !== audioState) setAudioState(state);
-      }, 1000);
-      return () => clearInterval(interval);
-  }, [audioState]);
+// Generates a punchy 4-bar Hip-Hop / Trap Beat loop via Web Audio synthesis
+function generateSyntheticDemoBeat(ctx: AudioContext, bpm: number = 140): AudioBuffer {
+  const sampleRate = ctx.sampleRate;
+  const secondsPerBeat = 60 / bpm;
+  const totalBeats = 16; // 4 bars of 4/4
+  const duration = secondsPerBeat * totalBeats;
+  const totalSamples = Math.floor(sampleRate * duration);
+  const buffer = ctx.createBuffer(2, totalSamples, sampleRate);
+  const left = buffer.getChannelData(0);
+  const right = buffer.getChannelData(1);
 
-  const connectAudio = async () => {
-      await audioEngine.init();
-      setAudioState(audioEngine.getState());
-  };
+  for (let beat = 0; beat < totalBeats; beat++) {
+    const beatTime = beat * secondsPerBeat;
+    const startSample = Math.floor(beatTime * sampleRate);
 
-  const snapToGrid = useCallback((time: number) => {
-    if (quantization === 'none') return time;
-    const beatDuration = 60 / bpm;
-    let snapInterval = beatDuration;
-    switch (quantization) {
-      case '1/4': snapInterval = beatDuration; break;
-      case '1/8': snapInterval = beatDuration / 2; break;
-      case '1/16': snapInterval = beatDuration / 4; break;
-      case '1/32': snapInterval = beatDuration / 8; break;
-    }
-    return Math.round(time / snapInterval) * snapInterval;
-  }, [bpm, quantization]);
-
-  const handleSeek = useCallback((time: number) => {
-      const snappedTime = snapToGrid(time);
-      setPlaybackTime(snappedTime);
-      if (isPlaying) {
-          audioEngine.play(tracks, snappedTime);
-      }
-  }, [isPlaying, tracks, snapToGrid]);
-
-  useEffect(() => {
-      audioEngine.setMasteringParams(masteringSettings);
-  }, [masteringSettings]);
-
-  useEffect(() => {
-      audioEngine.setLoopSettings(loopSettings);
-  }, [loopSettings]);
-  
-  // Recording Settings
-  const [isMonitoring, setIsMonitoring] = useState(false);
-  const [isMetronome, setIsMetronome] = useState(false);
-  const [recordingType, setRecordingType] = useState<VocalType>('main');
-  
-  // Advanced Rec Settings
-  const [showRecSettings, setShowRecSettings] = useState(false);
-  const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
-  const [preCount, setPreCount] = useState(false);
-  const [recordDuration, setRecordDuration] = useState<'free' | '4' | '8' | '16'>('free');
-  const [countInBeat, setCountInBeat] = useState<number | null>(null);
-  const [isMicTestActive, setIsMicTestActive] = useState(false);
-  const [recordingStartTime, setRecordingStartTime] = useState<number>(0);
-  const [recordingStartProjectTime, setRecordingStartProjectTime] = useState<number>(0);
-  const [recordMaster, setRecordMaster] = useState(false);
-  
-  // Input Gain & Metering
-  const [inputGain, setInputGain] = useState(1.0);
-  const [inputLevel, setInputLevel] = useState(0);
-
-  // Refs
-  const mediaRecorder = useRef<MediaRecorder | null>(null);
-  const audioChunks = useRef<Blob[]>([]);
-  const isRecordingCancelled = useRef(false);
-
-  // Initialize Input Devices
-  useEffect(() => {
-    const getDevices = async () => {
-        try {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const inputs = devices.filter(d => d.kind === 'audioinput');
-            setInputDevices(inputs);
-            if (inputs.length > 0 && !selectedDeviceId) {
-                setSelectedDeviceId(inputs[0].deviceId);
-            }
-        } catch (e) {
-            console.error("Error fetching devices:", e);
-        }
-    };
-    getDevices();
-    navigator.mediaDevices.ondevicechange = getDevices;
-  }, [selectedDeviceId]);
-
-  // VU Meter Loop
-  useEffect(() => {
-      let animId: number;
-      const updateMeter = () => {
-          if (recorderState === RecorderState.RECORDING || isMicTestActive) {
-              const level = audioEngine.getRecordingLevel();
-              setInputLevel(level);
-          } else {
-              setInputLevel(0);
-          }
-          animId = requestAnimationFrame(updateMeter);
-      };
-      updateMeter();
-      return () => cancelAnimationFrame(animId);
-  }, [recorderState, isMicTestActive]);
-  
-  // Playback Cursor Loop
-  useEffect(() => {
-      let animId: number;
-      const updateTime = () => {
-          if (isPlaying) {
-              const currentTime = audioEngine.getCurrentTime();
-              if (loopSettings.enabled && currentTime >= loopSettings.end) {
-                  handleSeek(loopSettings.start);
-              } else {
-                  setPlaybackTime(currentTime);
-              }
-              animId = requestAnimationFrame(updateTime);
-          }
-      };
-      if (isPlaying) {
-          updateTime();
-      }
-      return () => cancelAnimationFrame(animId);
-  }, [isPlaying, loopSettings, handleSeek]);
-
-  // Handle Input Gain Change realtime
-  useEffect(() => {
-      audioEngine.setInputGain(inputGain);
-  }, [inputGain]);
-
-  // Clean up mic test when closing settings
-  useEffect(() => {
-      if (!showRecSettings && isMicTestActive) {
-          toggleMicTest();
-      }
-  }, [showRecSettings]);
-
-  const [isAddTrackOpen, setIsAddTrackOpen] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const [isDraggingFile, setIsDraggingFile] = useState(false);
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDraggingFile(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDraggingFile(false);
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDraggingFile(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      if (file.type.startsWith('audio/') || file.name.match(/\.(mp3|wav|ogg|m4a)$/i)) {
-        // Create a synthetic event to reuse handleFileUpload
-        const syntheticEvent = {
-          target: { files: [file], value: '' }
-        } as unknown as React.ChangeEvent<HTMLInputElement>;
-        await handleFileUpload(syntheticEvent);
-      } else {
-        alert('Please drop a valid audio file.');
+    // 1. Kick on 0, 3, 6, 8, 11 (Syncopated Trap Kick)
+    if ([0, 3, 6, 8, 11].includes(beat)) {
+      const kickLength = Math.floor(sampleRate * 0.35);
+      for (let i = 0; i < kickLength && startSample + i < totalSamples; i++) {
+        const t = i / sampleRate;
+        const freq = 120 * Math.exp(-t * 22) + 45;
+        const env = Math.exp(-t * 10);
+        const s = Math.sin(2 * Math.PI * freq * t) * env * 0.8;
+        left[startSample + i] += s;
+        right[startSample + i] += s;
       }
     }
-  };
 
-  // --- Handlers ---
-
-  const TRACK_COLORS = [
-      '#ec4899', // Pink
-      '#a855f7', // Purple
-      '#f43f5e', // Rose
-      '#06b6d4', // Cyan
-      '#10b981', // Emerald
-      '#f59e0b', // Amber
-      '#3b82f6', // Blue
-      '#8b5cf6', // Violet
-      '#ef4444', // Red
-      '#14b8a6', // Teal
-  ];
-
-  const getRandomTrackColor = () => TRACK_COLORS[Math.floor(Math.random() * TRACK_COLORS.length)];
-
-  const handleImportClick = () => {
-      // Must be synchronous for Safari/iOS file picker to work
-      audioEngine.init().catch(e => console.warn("AudioEngine init failed on click", e));
-      fileInputRef.current?.click();
-  };
-
-  const addTrack = (type: 'audio' | 'beat') => {
-      if (type === 'beat') {
-          handleImportClick();
-      } else {
-          const newTrack: Track = {
-              id: crypto.randomUUID(),
-              name: `Audio Track ${tracks.filter(t => t.type === 'vocal').length + 1}`,
-              type: 'vocal',
-              vocalType: 'main',
-              color: getRandomTrackColor(),
-              isMuted: false,
-              isSolo: false,
-              isArmed: true, // Auto-arm new audio tracks
-              volume: 1.0,
-              pan: 0,
-              effects: { ...DEFAULT_EFFECTS },
-              waveformData: [],
-              startTime: 0,
-              duration: 0,
-              offset: 0
-          };
-          // Disarm other tracks
-          setTracks(prev => [...prev.map(t => ({ ...t, isArmed: false })), newTrack]);
-          setSelectedTrackId(newTrack.id);
-      }
-      setIsAddTrackOpen(false);
-  };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setIsImporting(true);
-      try {
-        // Ensure AudioContext is initialized/resumed on user interaction
-        await audioEngine.init();
-        
-        const arrayBuffer = await file.arrayBuffer();
-        const audioBuffer = await audioEngine.decodeAudioData(arrayBuffer);
-        const waveform = audioEngine.getWaveformData(audioBuffer);
-
-        // Detect BPM
-        // Give UI time to update loading state before heavy processing
-        await new Promise(resolve => setTimeout(resolve, 50));
-        const detectedBpm = await audioEngine.detectBPM(audioBuffer);
-        setBpm(detectedBpm);
-
-        // Fallback for crypto.randomUUID if not available
-        const trackId = (typeof crypto !== 'undefined' && crypto.randomUUID) 
-            ? crypto.randomUUID() 
-            : Math.random().toString(36).substring(2, 15);
-            
-        audioEngine.setTrackData(trackId, audioBuffer, file);
-
-        const newTrack: Track = {
-          id: trackId,
-          name: file.name,
-          type: 'beat',
-          color: '#3b82f6', // blue-500
-          isMuted: false,
-          isSolo: false,
-          isArmed: false,
-          volume: 0.8,
-          pan: 0,
-          effects: { ...DEFAULT_EFFECTS },
-          waveformData: waveform,
-          startTime: 0,
-          duration: audioBuffer.duration,
-          offset: 0
-        };
-
-        setTracks(prev => [newTrack, ...prev]);
-        if (!selectedTrackId) setSelectedTrackId(newTrack.id);
-        setIsAddTrackOpen(false);
-      } catch (error) {
-        console.error("File import failed:", error);
-        alert("Failed to import audio file. Please ensure it's a valid audio format (MP3, WAV, OGG).");
-      } finally {
-        // Reset input value to allow re-uploading same file if needed
-        e.target.value = '';
-        setIsImporting(false);
+    // 2. Snare / Clap on beats 2, 6, 10, 14
+    if (beat % 4 === 2) {
+      const snareLength = Math.floor(sampleRate * 0.22);
+      for (let i = 0; i < snareLength && startSample + i < totalSamples; i++) {
+        const t = i / sampleRate;
+        const noise = (Math.random() * 2 - 1) * Math.exp(-t * 25);
+        const tone = Math.sin(2 * Math.PI * 180 * t) * Math.exp(-t * 35) * 0.5;
+        const s = (noise * 0.6 + tone) * 0.75;
+        left[startSample + i] += s;
+        right[startSample + i] += s;
       }
     }
-  };
 
-  const exportSong = async () => {
-    if (tracks.length === 0) return;
-    setIsExporting(true);
-    try {
-      const blob = await audioEngine.exportMix(tracks, masteringSettings);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.style.display = 'none';
-      a.href = url;
-      a.download = 'HitFactory_Mixdown.wav';
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error("Export failed:", err);
-      alert("Failed to export the song.");
-    } finally {
-      setIsExporting(false);
+    // 3. Hi-Hats every 1/8th note
+    for (let sub = 0; sub < 2; sub++) {
+      const hatStart = Math.floor((beatTime + sub * (secondsPerBeat / 2)) * sampleRate);
+      const hatLength = Math.floor(sampleRate * 0.05);
+      const vel = sub === 0 ? 0.35 : 0.2;
+      for (let i = 0; i < hatLength && hatStart + i < totalSamples; i++) {
+        const t = i / sampleRate;
+        const s = (Math.random() * 2 - 1) * Math.exp(-t * 80) * vel;
+        left[hatStart + i] += s * 0.9;
+        right[hatStart + i] += s * 1.1; // Slight stereo width
+      }
     }
-  };
+  }
 
-  const saveProject = async () => {
-    setIsExporting(true);
-    try {
-      const projectData = {
-        tracks: await Promise.all(tracks.map(async (t) => {
-          const blob = audioEngine.getTrackBlob(t.id);
-          let base64 = null;
-          if (blob) {
-            base64 = await new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onloadend = () => resolve(reader.result);
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-          }
-          return {
-            ...t,
-            audioData: base64
-          };
-        })),
-        bpm,
-        masteringSettings
-      };
-      
-      const json = JSON.stringify(projectData);
-      localStorage.setItem('hitfactory_project', json);
-      alert('Project saved successfully!');
-    } catch (e: any) {
-      console.error('Save failed', e);
-      if (e.name === 'QuotaExceededError' || e.message?.includes('quota')) {
-        alert('Failed to save project: LocalStorage quota exceeded (5MB limit). Try removing some tracks or using shorter audio.');
-      } else {
-        alert('Failed to save project.');
-      }
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  const loadProject = async () => {
-    const json = localStorage.getItem('hitfactory_project');
-    if (!json) {
-      alert('No saved project found.');
-      return;
-    }
-    
-    setIsImporting(true);
-    try {
-      await audioEngine.init();
-      const projectData = JSON.parse(json);
-      
-      // Clear existing tracks
-      tracks.forEach(t => audioEngine.removeTrackData(t.id));
-      
-      const loadedTracks: Track[] = [];
-      for (const tData of projectData.tracks) {
-        const { audioData, ...trackMeta } = tData;
-        
-        if (audioData) {
-          const res = await fetch(audioData);
-          const blob = await res.blob();
-          const arrayBuffer = await blob.arrayBuffer();
-          const audioBuffer = await audioEngine.decodeAudioData(arrayBuffer);
-          audioEngine.setTrackData(trackMeta.id, audioBuffer, blob);
-        }
-        loadedTracks.push(trackMeta as Track);
-      }
-      
-      setTracks(loadedTracks);
-      setBpm(projectData.bpm || 120);
-      if (projectData.masteringSettings) {
-        setMasteringSettings(projectData.masteringSettings);
-      }
-      
-      alert('Project loaded successfully!');
-    } catch (e) {
-      console.error('Load failed', e);
-      alert('Failed to load project.');
-    } finally {
-      setIsImporting(false);
-    }
-  };
-
-  const getTrackColor = (type: VocalType) => {
-      switch(type) {
-          case 'main': return '#ec4899'; // Pink
-          case 'adlib': return '#a855f7'; // Purple
-          case 'double': return '#f43f5e'; // Rose
-          case 'harmony': return '#06b6d4'; // Cyan
-          default: return '#ec4899';
-      }
-  };
-
-  const toggleMicTest = async () => {
-      if (isMicTestActive) {
-          audioEngine.cleanupRecordingSession();
-          setIsMicTestActive(false);
-      } else {
-          try {
-              const constraints = { 
-                  audio: {
-                      deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
-                      echoCancellation: !isMonitoring,
-                      latency: 0,
-                      noiseSuppression: true,
-                      autoGainControl: false 
-                  } as any
-              };
-              const stream = await navigator.mediaDevices.getUserMedia(constraints);
-              audioEngine.initRecordingSession(stream, inputGain);
-              setIsMicTestActive(true);
-          } catch (e) {
-              console.error("Mic Test Failed", e);
-              alert("Could not access microphone.");
-          }
-      }
-  };
-
-  const startRecording = async () => {
-    try {
-        // Cleanup mic test if running
-        if (isMicTestActive) {
-            audioEngine.cleanupRecordingSession();
-            setIsMicTestActive(false);
-        }
-
-        await audioEngine.init();
-        isRecordingCancelled.current = false;
-
-        // Check for armed track
-        const armedTrack = tracks.find(t => t.isArmed);
-
-        if (!armedTrack) {
-            alert("Please add and arm a vocal track to record.");
-            return;
-        }
-
-        // 1. Handle Pre-Count
-        if (preCount) {
-            setRecorderState(RecorderState.COUNTING_IN);
-            audioEngine.startMetronome(bpm);
-            
-            const beatMs = 60000 / bpm;
-            for (let i = 4; i > 0; i--) {
-                if (isRecordingCancelled.current) {
-                    audioEngine.stopMetronome();
-                    return;
-                }
-                setCountInBeat(i);
-                await new Promise(resolve => setTimeout(resolve, beatMs));
-            }
-            setCountInBeat(null);
-            
-            // Stop metronome if not needed for recording
-            if (!isMetronome) audioEngine.stopMetronome();
-        } else {
-             if (isMetronome) audioEngine.startMetronome(bpm);
-        }
-
-        if (isRecordingCancelled.current) return;
-
-        // 2. Setup Stream
-        const constraints = { 
-            audio: {
-                deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
-                echoCancellation: !isMonitoring, // Better quality when monitoring via headphones
-                latency: 0,
-                noiseSuppression: true,
-                autoGainControl: false 
-            } as any
-        };
-
-        const sourceStream = await navigator.mediaDevices.getUserMedia(constraints);
-        
-        // 3. Init Session in AudioEngine (Gain -> Dest)
-        const destStream = audioEngine.initRecordingSession(sourceStream, inputGain, recordMaster);
-
-        // 4. Monitoring
-        if (isMonitoring) {
-            audioEngine.enableMonitoring();
-        }
-
-        // 5. Start MediaRecorder
-        mediaRecorder.current = new MediaRecorder(destStream);
-        audioChunks.current = [];
-
-        mediaRecorder.current.ondataavailable = (e) => {
-            if (e.data.size > 0) audioChunks.current.push(e.data);
-        };
-
-        const recordingStartTimeInProject = playbackTime;
-        setRecordingStartProjectTime(recordingStartTimeInProject);
-
-        mediaRecorder.current.onstop = async () => {
-            // Processing logic
-            const blob = new Blob(audioChunks.current, { type: 'audio/webm' });
-            if (blob.size === 0) return; // Clean up empty recordings
-
-            const arrayBuffer = await blob.arrayBuffer();
-            const audioBuffer = await audioEngine.decodeAudioData(arrayBuffer);
-            const waveform = audioEngine.getWaveformData(audioBuffer);
-            
-            const actualStartTime = recordingStartTimeInProject; // Vocals should not snap to grid automatically
-            
-            if (armedTrack) {
-                // Update existing armed track
-                setTracks(prev => prev.map(t => {
-                    if (t.id === armedTrack.id) {
-                        audioEngine.setTrackData(t.id, audioBuffer, blob);
-                        return {
-                            ...t,
-                            waveformData: waveform,
-                            isArmed: false, // Disarm after recording
-                            startTime: actualStartTime,
-                            duration: audioBuffer.duration,
-                            offset: 0
-                        };
-                    }
-                    return t;
-                }));
-            } else {
-                // Create new track
-                const trackId = crypto.randomUUID();
-                audioEngine.setTrackData(trackId, audioBuffer, blob);
-
-                const newTrack: Track = {
-                    id: trackId,
-                    name: `${recordingType.charAt(0).toUpperCase() + recordingType.slice(1)} Take`,
-                    type: 'vocal',
-                    vocalType: recordingType,
-                    color: getTrackColor(recordingType),
-                    isMuted: false,
-                    isSolo: false,
-                    isArmed: false,
-                    volume: 1.0,
-                    pan: recordingType === 'double' ? 0.3 : 0,
-                    effects: { ...DEFAULT_EFFECTS },
-                    waveformData: waveform,
-                    startTime: actualStartTime,
-                    duration: audioBuffer.duration,
-                    offset: 0
-                };
-                setTracks(prev => [...prev, newTrack]);
-                setSelectedTrackId(newTrack.id);
-            }
-
-            setRecorderState(RecorderState.IDLE);
-            
-            // Cleanup
-            audioEngine.cleanupRecordingSession();
-            audioEngine.stopMetronome();
-        };
-
-        mediaRecorder.current.start();
-        setRecorderState(RecorderState.RECORDING);
-        setRecordingStartTime(Date.now());
-        
-        // 6. Start Playback of backing tracks (Resume or Start)
-        // Ensure playback engine starts even if no tracks, to track time
-        audioEngine.play(tracks, playbackTime);
-        setIsPlaying(true);
-
-        // 7. Auto-Stop Duration
-      if (recordDuration !== 'free') {
-    const bars = parseInt(recordDuration);
-    const durationMs = (bars * 4) * (60000 / bpm);
-    const recorderInstance = mediaRecorder.current;
-    setTimeout(() => {
-        if (mediaRecorder.current === recorderInstance && mediaRecorder.current?.state === 'recording') {
-            stopRecording();
-        }
-    }, durationMs);
+  return buffer;
 }
 
-    } catch (err) {
-        console.error("Error accessing mic:", err);
-        alert("Could not access microphone.");
-        setRecorderState(RecorderState.IDLE);
-        setCountInBeat(null);
+export default function App() {
+  // --- Project State ---
+  const [project, setProject] = useState<Project>({
+    id: `project_${Date.now()}`,
+    name: 'HitFactory Session 1',
+    bpm: 140,
+    timeSignature: [4, 4],
+    sampleRate: 44100,
+    latencyCompensationMs: 35,
+    markers: [
+      { id: 'm1', name: 'Intro', time: 0, color: '#6366f1' },
+      { id: 'm2', name: 'Verse 1', time: 6.85, color: '#3b82f6' },
+      { id: 'm3', name: 'Hook', time: 20.57, color: '#f59e0b' }
+    ],
+    tracks: [
+      {
+        id: 'track_beat',
+        name: 'Trap Beat (Demo)',
+        type: 'beat',
+        color: '#6366f1',
+        isMuted: false,
+        isSolo: false,
+        isArmed: false,
+        volume: 0.9,
+        pan: 0,
+        effects: { ...DEFAULT_EFFECTS },
+        clips: [],
+        takes: []
+      },
+      {
+        id: 'track_vocal_lead',
+        name: 'Lead Vocal',
+        type: 'vocal',
+        vocalType: 'main',
+        color: '#ec4899',
+        isMuted: false,
+        isSolo: false,
+        isArmed: true, // Armed ready to record!
+        volume: 1.0,
+        pan: 0,
+        effects: { 
+          ...DEFAULT_EFFECTS, 
+          autotune: { enabled: true, key: 'C', scale: 'minor', speed: 20, amount: 85 } 
+        },
+        clips: [],
+        takes: []
+      }
+    ],
+    loopSettings: { enabled: true, start: 0, end: 13.71 },
+    masteringSettings: { ...DEFAULT_MASTERING },
+    reverbBus: { ...DEFAULT_REVERB },
+    delayBus: { ...DEFAULT_DELAY },
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  });
+
+  const [selectedTrackId, setSelectedTrackId] = useState<string>('track_vocal_lead');
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackTime, setPlaybackTime] = useState(0);
+  const [recorderState, setRecorderState] = useState<RecorderState>(RecorderState.IDLE);
+  const [pixelsPerSecond, setPixelsPerSecond] = useState(65);
+  const [quantization, setQuantization] = useState<QuantizationValue>('1/16');
+
+  // Metronome & Count-In
+  const [isMetronomeOn, setIsMetronomeOn] = useState(false);
+  const [metronomeVolume, setMetronomeVolume] = useState(0.5);
+  const [countInBars, setCountInBars] = useState(1);
+
+  // Meter levels & Reference track
+  const [meterLevels, setMeterLevels] = useState<MeterLevels>({
+    peakL: 0, peakR: 0, rmsL: 0, rmsR: 0, lufsIntegrated: -70, lufsShortTerm: -70, isClipping: false
+  });
+  const [referenceTrack, setReferenceTrack] = useState<ReferenceTrack>({
+    loaded: false, name: '', gain: 1.0, isActive: false
+  });
+
+  // UI Modals & Notifications
+  const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+  const [isAutoSaved, setIsAutoSaved] = useState(true);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Theme Mode (Dark / Light)
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('ayoni_theme') !== 'light';
+    } catch {
+      return true;
     }
+  });
+
+  const handleToggleTheme = () => {
+    setIsDarkMode(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('ayoni_theme', next ? 'dark' : 'light');
+      } catch {}
+      showToast(next ? "Switched to Dark Mode" : "Switched to Light Mode");
+      return next;
+    });
   };
 
-  const stopRecording = useCallback(() => {
-    isRecordingCancelled.current = true; // Flag to stop pre-count if active
+  // Clip Clipboard for Cut / Copy / Paste
+  const [clipboardClip, setClipboardClip] = useState<Clip | null>(null);
 
-    if (recorderState === RecorderState.COUNTING_IN) {
-        setCountInBeat(null);
-        audioEngine.stopMetronome();
-        setRecorderState(RecorderState.IDLE);
-        return;
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(prev => prev === msg ? null : prev);
+    }, 3200);
+  }, []);
+
+  // File Input Refs
+  const beatFileInputRef = useRef<HTMLInputElement>(null);
+  const refFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Recording internals
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingStartTimeRef = useRef<number>(0);
+  const recordingTakeNumberRef = useRef<number>(1);
+
+  // --- Initial Setup & Demo Beat Loader ---
+  useEffect(() => {
+    // Generate starter demo beat buffer for Track 1 on start
+    const setupStarter = async () => {
+      const ctx = await audioEngine.init();
+      const demoBuffer = generateSyntheticDemoBeat(ctx, project.bpm);
+      const peaks = audioEngine.getWaveformData(demoBuffer, 180);
+
+      const beatClip: Clip = {
+        id: 'clip_demo_beat',
+        trackId: 'track_beat',
+        name: 'Trap Beat Loop',
+        start: 0,
+        duration: demoBuffer.duration,
+        offset: 0,
+        gain: 1.0,
+        fadeIn: 0,
+        fadeOut: 0,
+        isMuted: false,
+        isReversed: false,
+        peaks,
+        audioBuffer: demoBuffer
+      };
+
+      audioEngine.setBuffer('clip_demo_beat', demoBuffer);
+      audioEngine.setBuffer('track_beat', demoBuffer);
+
+      setProject(prev => ({
+        ...prev,
+        tracks: prev.tracks.map(t => t.id === 'track_beat' ? { ...t, clips: [beatClip] } : t)
+      }));
+    };
+
+    setupStarter();
+  }, []);
+
+  // Sync Bus Settings to Audio Engine
+  useEffect(() => {
+    audioEngine.setMasteringParams(project.masteringSettings);
+  }, [project.masteringSettings]);
+
+  useEffect(() => {
+    audioEngine.setReverbBusSettings(project.reverbBus);
+  }, [project.reverbBus]);
+
+  useEffect(() => {
+    audioEngine.setDelayBusSettings(project.delayBus);
+  }, [project.delayBus]);
+
+  useEffect(() => {
+    audioEngine.setBpm(project.bpm);
+  }, [project.bpm]);
+
+  useEffect(() => {
+    audioEngine.setLoopSettings(project.loopSettings);
+  }, [project.loopSettings]);
+
+  // Autosave to IndexedDB every 5 seconds if modified
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      try {
+        await projectDb.saveProject(project);
+        setIsAutoSaved(true);
+      } catch (e) {
+        console.warn("Autosave failed", e);
+      }
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [project]);
+
+  const armedTrack = project.tracks.find(t => t.isArmed && t.type === 'vocal') || project.tracks.find(t => t.type === 'vocal');
+  const [trackLevels, setTrackLevels] = useState<{ [trackId: string]: number }>({});
+
+  // Master Meter & Playhead Cursor Animation Loop
+  useEffect(() => {
+    let animId: number;
+
+    const tick = () => {
+      // 1. Update Playhead
+      if (isPlaying) {
+        const time = audioEngine.getCurrentTime();
+        // Check loop boundary wrap
+        if (project.loopSettings.enabled && time >= project.loopSettings.end) {
+          audioEngine.play(project.tracks, project.loopSettings.start);
+          setPlaybackTime(project.loopSettings.start);
+        } else {
+          setPlaybackTime(time);
+        }
+      }
+
+      // 2. Update Master Levels
+      const levels = audioEngine.getMasterMeterLevels();
+      setMeterLevels(levels);
+
+      // 3. Update Channel Levels for Hardware Faders
+      const levelsMap: { [trackId: string]: number } = {};
+      project.tracks.forEach(t => {
+        levelsMap[t.id] = audioEngine.getTrackLevel(t.id);
+      });
+      if (recorderState === RecorderState.RECORDING && armedTrack) {
+        levelsMap[armedTrack.id] = audioEngine.getRecordingLevel();
+      }
+      setTrackLevels(levelsMap);
+
+      animId = requestAnimationFrame(tick);
+    };
+
+    animId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animId);
+  }, [isPlaying, project.loopSettings, project.tracks, recorderState, armedTrack]);
+
+  // Metronome State Sync
+  useEffect(() => {
+    if (isMetronomeOn && isPlaying) {
+      audioEngine.startMetronome(project.bpm, metronomeVolume);
+    } else {
+      audioEngine.stopMetronome();
     }
+  }, [isMetronomeOn, isPlaying, project.bpm, metronomeVolume]);
 
-    if (mediaRecorder.current && recorderState === RecorderState.RECORDING) {
-        mediaRecorder.current.stop();
-        // Tracks are stopped in mediaRecorder.onstop -> cleanupRecordingSession
-        
-        audioEngine.stop(); // Stop backing playback
-        setIsPlaying(false);
+  // --- Transport Actions ---
+
+  const handleTogglePlay = useCallback(() => {
+    audioEngine.resume();
+    if (isPlaying) {
+      audioEngine.stop();
+      setIsPlaying(false);
+    } else {
+      audioEngine.play(project.tracks, playbackTime);
+      setIsPlaying(true);
+    }
+  }, [isPlaying, project.tracks, playbackTime]);
+
+  const handleStop = useCallback(() => {
+    audioEngine.stop();
+    setIsPlaying(false);
+    if (recorderState === RecorderState.RECORDING) {
+      handleStopRecording();
     }
   }, [recorderState]);
 
-  const togglePlayback = useCallback(() => {
-    if (isPlaying) {
-        audioEngine.stop();
-        audioEngine.stopMetronome();
-        setIsPlaying(false);
-    } else {
-        audioEngine.play(tracks, playbackTime); // Resume from current cursor position
-        if (isMetronome) audioEngine.startMetronome(bpm);
-        setIsPlaying(true);
-    }
-  }, [isPlaying, tracks, playbackTime, isMetronome, bpm]);
+  const handleReturnToZero = useCallback(() => {
+    audioEngine.stop();
+    setIsPlaying(false);
+    setPlaybackTime(0);
+  }, []);
 
-  // Keyboard Shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-        
-        if (e.code === 'Space') {
-            e.preventDefault();
-            togglePlayback();
+  const handleSeek = useCallback((time: number) => {
+    setPlaybackTime(time);
+    if (isPlaying) {
+      audioEngine.play(project.tracks, time);
+    }
+  }, [isPlaying, project.tracks]);
+
+  const handleToggleLoop = useCallback(() => {
+    setProject(prev => ({
+      ...prev,
+      loopSettings: {
+        ...prev.loopSettings,
+        enabled: !prev.loopSettings.enabled
+      }
+    }));
+  }, []);
+
+  // --- Multitrack Vocal Recording with Latency Compensation ---
+
+  const handleStartRecording = async () => {
+    if (!armedTrack) {
+      alert("Please arm a vocal track to record.");
+      return;
+    }
+
+    try {
+      await audioEngine.init();
+      await audioEngine.resume();
+
+      // Check Count-in
+      if (countInBars > 0) {
+        setRecorderState(RecorderState.COUNTING_IN);
+        // Calculate count-in duration
+        const barSec = (60 / project.bpm) * 4;
+        const countInDurationMs = countInBars * barSec * 1000;
+
+        // Start metronome clicks during count-in
+        audioEngine.startMetronome(project.bpm, metronomeVolume);
+
+        setTimeout(() => {
+          executeRecordStream();
+        }, countInDurationMs);
+      } else {
+        executeRecordStream();
+      }
+    } catch (e) {
+      console.error("Recording init error", e);
+      alert("Microphone permission denied or audio device unavailable.");
+      setRecorderState(RecorderState.IDLE);
+    }
+  };
+
+  const executeRecordStream = async () => {
+    try {
+      const stream = await audioEngine.initRecordingSession(undefined, 1.0);
+      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      audioChunksRef.current = [];
+
+      mediaRecorderRef.current.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
         }
-        if (e.code === 'KeyR') {
-            if (recorderState === RecorderState.IDLE) startRecording();
-            else stopRecording();
+      };
+
+      mediaRecorderRef.current.onstop = async () => {
+        setRecorderState(RecorderState.PROCESSING);
+        const rawBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const arrayBuffer = await rawBlob.arrayBuffer();
+
+        try {
+          const decodedBuffer = await audioEngine.decodeAudioData(arrayBuffer);
+          const peaks = audioEngine.getWaveformData(decodedBuffer, 160);
+
+          // Latency Compensation: Shift start time back by latency compensation ms
+          const rawStart = recordingStartTimeRef.current;
+          const compensatedStart = Math.max(0, rawStart - (project.latencyCompensationMs / 1000));
+          const clipId = `clip_vocal_${Date.now()}`;
+          const takeId = `take_${Date.now()}`;
+
+          // Save buffer in engine cache
+          audioEngine.setBuffer(clipId, decodedBuffer);
+
+          const newClip: Clip = {
+            id: clipId,
+            trackId: armedTrack!.id,
+            name: `Take ${recordingTakeNumberRef.current}`,
+            start: compensatedStart,
+            duration: decodedBuffer.duration,
+            offset: 0,
+            gain: 1.0,
+            fadeIn: 0.02,
+            fadeOut: 0.05,
+            isMuted: false,
+            isReversed: false,
+            peaks,
+            audioBuffer: decodedBuffer,
+            blob: rawBlob
+          };
+
+          const newTake: Take = {
+            id: takeId,
+            trackId: armedTrack!.id,
+            takeNumber: recordingTakeNumberRef.current,
+            blob: rawBlob,
+            duration: decodedBuffer.duration,
+            startTime: compensatedStart,
+            createdAt: Date.now(),
+            isSelected: true
+          };
+
+          recordingTakeNumberRef.current += 1;
+
+          // Save blob into IndexedDB
+          await projectDb.saveAudioBlob(clipId, rawBlob);
+
+          // Add clip to armed track
+          setProject(prev => ({
+            ...prev,
+            tracks: prev.tracks.map(t => {
+              if (t.id === armedTrack!.id) {
+                return {
+                  ...t,
+                  clips: [...t.clips, newClip],
+                  takes: [...t.takes, newTake]
+                };
+              }
+              return t;
+            })
+          }));
+        } catch (err) {
+          console.error("Decoding vocal take failed", err);
+        } finally {
+          audioEngine.cleanupRecordingSession();
+          setRecorderState(RecorderState.IDLE);
         }
+      };
+
+      // Start actual recording
+      recordingStartTimeRef.current = playbackTime;
+      mediaRecorderRef.current.start(100);
+      setRecorderState(RecorderState.RECORDING);
+
+      // Start playing backing tracks in perfect sync!
+      audioEngine.play(project.tracks, playbackTime);
+      setIsPlaying(true);
+    } catch (e) {
+      console.error(e);
+      setRecorderState(RecorderState.IDLE);
+    }
+  };
+
+  const handleStopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+    audioEngine.stop();
+    setIsPlaying(false);
+  };
+
+  const handleToggleRecord = () => {
+    if (recorderState === RecorderState.RECORDING) {
+      handleStopRecording();
+    } else {
+      handleStartRecording();
+    }
+  };
+
+  // --- Audio / MP3 File Import & Auto BPM Detection ---
+
+  const handleImportAudioFile = async (file: File) => {
+    if (!file) return;
+
+    try {
+      showToast(`Decoding ${file.name}...`);
+      await audioEngine.init();
+      await audioEngine.resume();
+
+      const arrayBuffer = await file.arrayBuffer();
+      const decodedBuffer = await audioEngine.decodeAudioData(arrayBuffer);
+      
+      // Auto-detect BPM
+      const detectedBpm = await audioEngine.detectBPM(decodedBuffer);
+      const peaks = audioEngine.getWaveformData(decodedBuffer, 200);
+
+      const clipId = `clip_beat_${Date.now()}`;
+      audioEngine.setBuffer(clipId, decodedBuffer);
+
+      // Save blob in IndexedDB
+      await projectDb.saveAudioBlob(clipId, file);
+
+      const cleanName = file.name.replace(/\.[^/.]+$/, "");
+
+      const newClip: Clip = {
+        id: clipId,
+        trackId: 'track_beat',
+        name: cleanName,
+        start: 0,
+        duration: decodedBuffer.duration,
+        offset: 0,
+        gain: 1.0,
+        fadeIn: 0,
+        fadeOut: 0,
+        isMuted: false,
+        isReversed: false,
+        peaks,
+        audioBuffer: decodedBuffer,
+        blob: file
+      };
+
+      setProject(prev => {
+        let updatedTracks = [...prev.tracks];
+        const beatTrackIdx = updatedTracks.findIndex(t => t.type === 'beat');
+
+        if (beatTrackIdx >= 0) {
+          updatedTracks[beatTrackIdx] = {
+            ...updatedTracks[beatTrackIdx],
+            name: `${cleanName}`,
+            clips: [newClip]
+          };
+        } else {
+          updatedTracks.unshift({
+            id: 'track_beat',
+            name: `${cleanName}`,
+            type: 'beat',
+            color: '#6366f1',
+            isMuted: false,
+            isSolo: false,
+            isArmed: false,
+            volume: 0.9,
+            pan: 0,
+            effects: { ...DEFAULT_EFFECTS },
+            clips: [newClip],
+            takes: []
+          });
+        }
+
+        return {
+          ...prev,
+          bpm: detectedBpm,
+          tracks: updatedTracks
+        };
+      });
+
+      setSelectedTrackId('track_beat');
+      showToast(`Imported "${cleanName}" (${detectedBpm} BPM detected)`);
+    } catch (err) {
+      console.error("Audio / MP3 decode error", err);
+      alert("Failed to decode audio file. Please check that the MP3 or audio file is valid.");
+    }
+  };
+
+  const handleBeatFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      await handleImportAudioFile(file);
+    }
+    if (e.target) e.target.value = '';
+  };
+
+  // --- Reference Track Loader ---
+
+  const handleReferenceFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const decodedBuffer = await audioEngine.decodeAudioData(arrayBuffer);
+      audioEngine.loadReferenceTrack(decodedBuffer);
+
+      setReferenceTrack({
+        loaded: true,
+        name: file.name,
+        audioBuffer: decodedBuffer,
+        blob: file,
+        gain: 1.0,
+        isActive: false
+      });
+      showToast(`Reference loaded: ${file.name}`);
+    } catch (err) {
+      console.error("Reference track decode failed", err);
+    } finally {
+      if (e.target) e.target.value = '';
+    }
+  };
+
+  const handleToggleReferenceAB = () => {
+    const nextState = !referenceTrack.isActive;
+    setReferenceTrack(prev => ({ ...prev, isActive: nextState }));
+    audioEngine.toggleReferenceAB(nextState, playbackTime);
+  };
+
+  // --- Tap Tempo Engine ---
+
+  const tapTimesRef = useRef<number[]>([]);
+  const handleTapTempo = () => {
+    const now = performance.now();
+    const taps = tapTimesRef.current;
+    taps.push(now);
+
+    // Keep only last 5 taps within 2.5 seconds
+    const recent = taps.filter(t => now - t < 2500);
+    tapTimesRef.current = recent;
+
+    if (recent.length >= 2) {
+      const intervals: number[] = [];
+      for (let i = 1; i < recent.length; i++) {
+        intervals.push(recent[i] - recent[i - 1]);
+      }
+      const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+      const calculatedBpm = Math.round(60000 / avgInterval);
+      if (calculatedBpm >= 50 && calculatedBpm <= 220) {
+        setProject(prev => ({ ...prev, bpm: calculatedBpm }));
+      }
+    }
+  };
+
+  // --- Clip Editing Actions (Split, Copy, Cut, Duplicate, Paste, Delete) ---
+
+  const handleSplitClip = (trackId: string, clipId: string, splitProjectTime: number) => {
+    let splitOccurred = false;
+    setProject(prev => ({
+      ...prev,
+      tracks: prev.tracks.map(t => {
+        if (t.id !== trackId) return t;
+        const target = t.clips.find(c => c.id === clipId);
+        if (!target) return t;
+
+        const relTime = splitProjectTime - target.start;
+        if (relTime <= 0.08 || relTime >= target.duration - 0.08) return t;
+
+        const clip1: Clip = {
+          ...target,
+          duration: relTime
+        };
+
+        const newId = `clip_${Date.now()}`;
+        if (target.audioBuffer) {
+          audioEngine.setBuffer(newId, target.audioBuffer);
+        }
+
+        const clip2: Clip = {
+          ...target,
+          id: newId,
+          name: `${target.name} (Part 2)`,
+          start: splitProjectTime,
+          duration: target.duration - relTime,
+          offset: target.offset + relTime
+        };
+
+        splitOccurred = true;
+        return {
+          ...t,
+          clips: t.clips.map(c => c.id === clipId ? clip1 : c).concat(clip2)
+        };
+      })
+    }));
+    if (splitOccurred) {
+      showToast("Split clip at playhead");
+    }
+  };
+
+  const handleCopyClip = (trackId: string, clipId: string) => {
+    const track = project.tracks.find(t => t.id === trackId);
+    const clip = track?.clips.find(c => c.id === clipId);
+    if (!clip) return;
+    setClipboardClip({ ...clip });
+    showToast(`Copied "${clip.name}"`);
+  };
+
+  const handleCutClip = (trackId: string, clipId: string) => {
+    const track = project.tracks.find(t => t.id === trackId);
+    const clip = track?.clips.find(c => c.id === clipId);
+    if (!clip) return;
+    setClipboardClip({ ...clip });
+    handleDeleteClip(trackId, clipId);
+    showToast(`Cut "${clip.name}"`);
+  };
+
+  const handleDuplicateClip = (trackId: string, clipId: string) => {
+    const track = project.tracks.find(t => t.id === trackId);
+    const target = track?.clips.find(c => c.id === clipId);
+    if (!target) return;
+
+    const newClipId = `clip_${Date.now()}`;
+    if (target.audioBuffer) {
+      audioEngine.setBuffer(newClipId, target.audioBuffer);
+    }
+
+    const dupe: Clip = {
+      ...target,
+      id: newClipId,
+      name: `${target.name} (Copy)`,
+      start: target.start + target.duration + 0.2
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePlayback, recorderState]); // Dependencies must be fresh for closure
+
+    setProject(prev => ({
+      ...prev,
+      tracks: prev.tracks.map(t => {
+        if (t.id !== trackId) return t;
+        return {
+          ...t,
+          clips: [...t.clips, dupe]
+        };
+      })
+    }));
+    showToast(`Duplicated "${target.name}"`);
+  };
+
+  const handlePasteClip = (trackId: string, atTime?: number) => {
+    if (!clipboardClip) {
+      showToast("Clipboard is empty");
+      return;
+    }
+    const pasteTime = atTime !== undefined ? atTime : playbackTime;
+    const newClipId = `clip_${Date.now()}`;
+
+    if (clipboardClip.audioBuffer) {
+      audioEngine.setBuffer(newClipId, clipboardClip.audioBuffer);
+    }
+
+    const pastedClip: Clip = {
+      ...clipboardClip,
+      id: newClipId,
+      trackId,
+      name: `${clipboardClip.name} (Paste)`,
+      start: Math.max(0, pasteTime)
+    };
+
+    setProject(prev => ({
+      ...prev,
+      tracks: prev.tracks.map(t => {
+        if (t.id !== trackId) return t;
+        return {
+          ...t,
+          clips: [...t.clips, pastedClip]
+        };
+      })
+    }));
+    showToast(`Pasted "${clipboardClip.name}"`);
+  };
+
+  const handleDeleteClip = (trackId: string, clipId: string) => {
+    setProject(prev => ({
+      ...prev,
+      tracks: prev.tracks.map(t => {
+        if (t.id !== trackId) return t;
+        return {
+          ...t,
+          clips: t.clips.filter(c => c.id !== clipId)
+        };
+      })
+    }));
+    showToast("Deleted clip");
+  };
+
+  const handleSelectTake = (trackId: string, take: Take) => {
+    // Promotes selected take to active clip on track
+    setProject(prev => ({
+      ...prev,
+      tracks: prev.tracks.map(t => {
+        if (t.id !== trackId) return t;
+        const updatedTakes = t.takes.map(tk => ({ ...tk, isSelected: tk.id === take.id }));
+        return {
+          ...t,
+          takes: updatedTakes
+        };
+      })
+    }));
+  };
+
+  const handleDeleteTake = (trackId: string, takeId: string) => {
+    setProject(prev => ({
+      ...prev,
+      tracks: prev.tracks.map(t => {
+        if (t.id !== trackId) return t;
+        return {
+          ...t,
+          takes: t.takes.filter(tk => tk.id !== takeId)
+        };
+      })
+    }));
+  };
+
+  // --- Track Management (Add Track with Role & Rename, Update, Delete) ---
+
+  const handleAddTrack = (type: TrackType = 'vocal', customName?: string, vocalType?: VocalType) => {
+    const id = `track_${Date.now()}`;
+    const count = project.tracks.filter(t => t.type === type).length + 1;
+    
+    const roleColors: Record<string, string> = {
+      main: '#a855f7',
+      adlib: '#00f2fe',
+      double: '#ec4899',
+      harmony: '#f59e0b',
+      backing: '#10b981',
+      beat: '#3b82f6'
+    };
+
+    const effectiveRole = vocalType || (type === 'beat' ? 'beat' : count === 1 ? 'main' : count === 2 ? 'adlib' : 'double');
+    const color = roleColors[effectiveRole] || '#8b5cf6';
+
+    const defaultName = customName?.trim() || (
+      type === 'beat' 
+        ? `Beat ${count}` 
+        : effectiveRole === 'main' 
+          ? 'Lead Vocal' 
+          : effectiveRole === 'adlib' 
+            ? 'Ad-libs' 
+            : effectiveRole === 'double' 
+              ? 'Double Vocal' 
+              : effectiveRole === 'harmony' 
+                ? 'Harmonies' 
+                : effectiveRole === 'backing' 
+                  ? 'Backing Vocal' 
+                  : `Vocal ${count}`
+    );
+
+    const newTrack: Track = {
+      id,
+      name: defaultName,
+      type,
+      vocalType: type === 'vocal' ? (vocalType || (effectiveRole as VocalType)) : undefined,
+      color,
+      isMuted: false,
+      isSolo: false,
+      isArmed: type === 'vocal', // Automatically arm for recording
+      volume: 1.0,
+      pan: 0,
+      effects: { 
+        ...DEFAULT_EFFECTS,
+        autotune: {
+          ...DEFAULT_EFFECTS.autotune,
+          enabled: type === 'vocal',
+          speed: effectiveRole === 'adlib' ? 12 : 25
+        }
+      },
+      clips: [],
+      takes: []
+    };
+
+    setProject(prev => {
+      // Unarm other vocal tracks if arming this new one
+      const updatedTracks = prev.tracks.map(t => ({
+        ...t,
+        isArmed: type === 'vocal' ? false : t.isArmed
+      }));
+      return {
+        ...prev,
+        tracks: [...updatedTracks, newTrack]
+      };
+    });
+    setSelectedTrackId(id);
+    showToast(`Added track: ${defaultName}`);
+  };
+
+  const handleDeleteTrack = (id: string) => {
+    if (project.tracks.length <= 1) {
+      showToast("Cannot delete the only track in the project");
+      return;
+    }
+    const target = project.tracks.find(t => t.id === id);
+    const targetName = target?.name || "Track";
+
+    setProject(prev => {
+      const remaining = prev.tracks.filter(t => t.id !== id);
+      return {
+        ...prev,
+        tracks: remaining
+      };
+    });
+
+    if (selectedTrackId === id) {
+      const remaining = project.tracks.filter(t => t.id !== id);
+      setSelectedTrackId(remaining[0]?.id || null);
+    }
+    showToast(`Deleted track "${targetName}"`);
+  };
 
   const handleUpdateTrack = (id: string, updates: Partial<Track>) => {
-      setTracks(prev => prev.map(t => {
-          if (t.id === id) {
-              // If arming, disarm others (exclusive arming for now)
-              if (updates.isArmed) {
-                  return { ...t, ...updates };
-              }
-              const updated = { ...t, ...updates };
-              audioEngine.updateTrackParams(id, updated);
-              return updated;
+    setProject(prev => ({
+      ...prev,
+      tracks: prev.tracks.map(t => {
+        if (t.id !== id) return t;
+        const updated = { ...t, ...updates };
+        audioEngine.updateTrackParams(id, updated);
+        return updated;
+      })
+    }));
+    setIsAutoSaved(false);
+  };
+
+  const handleUpdateMasterVolume = (vol: number) => {
+    setProject(prev => ({
+      ...prev,
+      masteringSettings: {
+        ...prev.masteringSettings,
+        gain: vol
+      }
+    }));
+  };
+
+  // --- Export Handler ---
+
+  const handleExportMixdown = async (format: 'wav16' | 'wav24' | 'stems', range: 'full' | 'loop') => {
+    const bitDepth = format === 'wav24' ? 24 : 16;
+    const rangeParam = range === 'loop' && project.loopSettings.enabled ? project.loopSettings : undefined;
+
+    if (format === 'stems') {
+      // Export stems: render each track individually
+      for (const track of project.tracks) {
+        if (track.clips.length === 0) continue;
+        const soloTrackList = project.tracks.map(t => ({
+          ...t,
+          isMuted: t.id !== track.id,
+          isSolo: t.id === track.id
+        }));
+
+        const stemBlob = await audioEngine.exportMixdown(
+          soloTrackList,
+          project.masteringSettings,
+          project.reverbBus,
+          project.delayBus,
+          project.bpm,
+          rangeParam,
+          bitDepth
+        );
+
+        triggerDownload(stemBlob, `${project.name} - Stem - ${track.name}.wav`);
+      }
+    } else {
+      // Export full master mixdown
+      const mixdownBlob = await audioEngine.exportMixdown(
+        project.tracks,
+        project.masteringSettings,
+        project.reverbBus,
+        project.delayBus,
+        project.bpm,
+        rangeParam,
+        bitDepth
+      );
+
+      triggerDownload(mixdownBlob, `${project.name} - Master (${bitDepth}-bit).wav`);
+    }
+  };
+
+  const triggerDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // --- Keyboard Shortcuts (Space, R, S, L, M, Home) ---
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is typing in an input or select
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
+        return;
+      }
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        handleTogglePlay();
+      } else if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        handleToggleRecord();
+      } else if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault();
+        handleToggleLoop();
+      } else if (e.code === 'Home' || e.code === 'Enter') {
+        e.preventDefault();
+        handleReturnToZero();
+      } else if (e.key === 's' || e.key === 'S') {
+        // Split selected track at playhead
+        if (selectedTrackId) {
+          const track = project.tracks.find(t => t.id === selectedTrackId);
+          const clip = track?.clips.find(c => playbackTime >= c.start && playbackTime <= c.start + c.duration);
+          if (clip) {
+            handleSplitClip(selectedTrackId, clip.id, playbackTime);
           }
-          // If another track is being armed, disarm this one
-          if (updates.isArmed) {
-              return { ...t, isArmed: false };
-          }
-          return t;
-      }));
-  };
+        }
+      } else if (e.key === 'm' || e.key === 'M') {
+        if (selectedTrackId) {
+          const track = project.tracks.find(t => t.id === selectedTrackId);
+          if (track) handleUpdateTrack(selectedTrackId, { isMuted: !track.isMuted });
+        }
+      }
+    };
 
-  const deleteTrack = (id: string) => {
-      setTracks(prev => prev.filter(t => t.id !== id));
-      audioEngine.removeTrackData(id);
-      if (selectedTrackId === id) setSelectedTrackId(null);
-  };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleTogglePlay, handleToggleRecord, handleToggleLoop, handleReturnToZero, selectedTrackId, playbackTime, project.tracks]);
 
-  const splitTrack = (trackId: string, splitTime: number) => {
-      const track = tracks.find(t => t.id === trackId);
-      const buffer = audioEngine.getTrackBuffer(trackId);
-      if (!track || !buffer) return;
-
-      const trackStart = track.startTime || 0;
-      const relativeSplitTime = splitTime - trackStart;
-      const currentDuration = track.duration || buffer.duration;
-
-      if (relativeSplitTime <= 0 || relativeSplitTime >= currentDuration) return;
-
-      const firstPart: Track = {
-          ...track,
-          duration: relativeSplitTime
-      };
-
-      const secondPartId = crypto.randomUUID();
-      audioEngine.setTrackData(secondPartId, buffer, audioEngine.getTrackBlob(trackId));
-
-      const secondPart: Track = {
-          ...track,
-          id: secondPartId,
-          name: `${track.name} (Split)`,
-          startTime: splitTime,
-          offset: (track.offset || 0) + relativeSplitTime,
-          duration: currentDuration - relativeSplitTime
-      };
-
-      setTracks(prev => {
-          const index = prev.findIndex(t => t.id === trackId);
-          const newTracks = [...prev];
-          newTracks[index] = firstPart;
-          newTracks.splice(index + 1, 0, secondPart);
-          return newTracks;
-      });
-  };
-
-  const selectedTrack = tracks.find(t => t.id === selectedTrackId) || null;
-
-  // Calculate Remaining Time for Display
-  const getRecordingTimer = () => {
-      if (recordDuration === 'free' || recorderState !== RecorderState.RECORDING) return null;
-      const totalSeconds = (parseInt(recordDuration) * 4) * (60 / bpm);
-      const elapsed = playbackTime - recordingStartProjectTime;
-      const remaining = Math.max(0, totalSeconds - elapsed);
-      return remaining.toFixed(1) + 's';
-  };
+  // Selected Track Object
+  const selectedTrack = project.tracks.find(t => t.id === selectedTrackId) || null;
 
   return (
-    <div className="flex flex-col h-screen bg-studio-950 text-zinc-300 font-sans overflow-hidden relative">
-      
-      {/* Loading Overlay */}
-      <AnimatePresence>
-        {(isImporting || isExporting) && (
-           <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-md"
-           >
-              <div className="w-16 h-16 border-4 border-studio-accent border-t-transparent rounded-full animate-spin mb-4" />
-              <h2 className="text-xl font-black text-white tracking-widest">
-                {isExporting ? 'PROCESSING...' : 'IMPORTING AUDIO...'}
-              </h2>
-              <p className="text-studio-400 text-sm mt-2">
-                {isExporting ? 'Please wait while we process your request' : 'Processing waveform and detecting BPM'}
-              </p>
-           </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Pre-count Overlay */}
-      <AnimatePresence>
-        {recorderState === RecorderState.COUNTING_IN && countInBeat !== null && (
-           <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md"
-           >
-              <motion.div 
-                initial={{ scale: 0.5, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                className="text-[200px] font-black text-studio-accent drop-shadow-[0_0_50px_rgba(139,92,246,0.5)]"
-              >
-                {countInBeat}
-              </motion.div>
-           </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Header / Transport Bar */}
-      <header className="h-16 bg-studio-900 border-b border-studio-800 flex items-center justify-between px-6 z-40 shadow-lg">
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-studio-accent rounded-lg flex items-center justify-center shadow-lg shadow-studio-accent/20">
-              <Music size={18} className="text-white" />
-            </div>
-            <h1 className="font-black text-lg tracking-tighter text-white hidden md:block">HITFACTORY</h1>
-          </div>
-
-          <div className="h-8 w-px bg-studio-800 hidden md:block" />
-
-          {/* Transport Controls */}
-          <div className="flex items-center gap-1 bg-studio-950 p-1 rounded-xl border border-studio-800">
-            <button 
-              onClick={() => handleSeek(0)}
-              className="p-2 text-studio-500 hover:text-white transition-colors"
-              title="Return to Start"
-            >
-              <SkipBack size={16} />
-            </button>
-            <button 
-              onClick={togglePlayback}
-              className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${isPlaying ? 'bg-studio-800 text-studio-accent' : 'bg-studio-accent text-white shadow-lg shadow-studio-accent/20'}`}
-            >
-              {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
-            </button>
-            <button 
-              onClick={() => {
-                audioEngine.stop();
-                audioEngine.stopMetronome();
-                setIsPlaying(false);
-                setPlaybackTime(0);
-              }}
-              className="w-10 h-10 rounded-lg flex items-center justify-center bg-studio-800 text-studio-500 hover:text-white hover:bg-studio-700 transition-all"
-            >
-              <Square size={16} fill="currentColor" />
-            </button>
-            <button 
-              onClick={recorderState === RecorderState.IDLE || recorderState === RecorderState.COUNTING_IN ? startRecording : stopRecording}
-              className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${recorderState === RecorderState.RECORDING ? 'bg-studio-danger text-white animate-pulse shadow-[0_0_15px_rgba(239,68,68,0.4)]' : 'bg-studio-800 text-studio-danger hover:bg-studio-700'}`}
-            >
-              <Mic size={20} fill={recorderState === RecorderState.RECORDING ? "currentColor" : "none"} />
-            </button>
-          </div>
+    <div className="w-screen h-screen flex flex-col bg-studio-950 text-zinc-300 font-sans overflow-hidden relative">
+      {/* Toast Notification Banner */}
+      {toastMessage && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 bg-[#1e202f]/95 border border-purple-500/60 text-white px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-bold flex items-center gap-2 animate-bounce pointer-events-none">
+          <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.9)]" />
+          <span>{toastMessage}</span>
         </div>
+      )}
 
-        {/* Center Display */}
-        <div className="hidden lg:flex items-center gap-4 bg-studio-950 border border-studio-800 rounded-xl px-6 py-1.5 shadow-inner">
-          <div className="flex flex-col items-center">
-            <span className="text-[9px] font-bold text-studio-500 uppercase tracking-widest">Position</span>
-            <span className="text-lg font-mono text-studio-accent leading-none">
-              {Math.floor(playbackTime / 60).toString().padStart(2, '0')}:
-              {Math.floor(playbackTime % 60).toString().padStart(2, '0')}.
-              {Math.floor((playbackTime % 1) * 100).toString().padStart(2, '0')}
-            </span>
-          </div>
-          <div className="h-8 w-px bg-studio-800" />
-          <div className="flex flex-col items-center">
-            <span className="text-[9px] font-bold text-studio-500 uppercase tracking-widest">Tempo</span>
-            <div className="flex items-center gap-1">
-              <span className="text-lg font-mono text-white leading-none">{bpm}</span>
-              <span className="text-[9px] font-bold text-studio-500">BPM</span>
-            </div>
-          </div>
-          <div className="h-8 w-px bg-studio-800" />
-          <div className="flex flex-col items-center">
-            <span className="text-[9px] font-bold text-studio-500 uppercase tracking-widest">Snap</span>
-            <select 
-              value={quantization}
-              onChange={(e) => setQuantization(e.target.value as QuantizationValue)}
-              className="bg-transparent text-xs font-mono text-studio-accent border-none focus:ring-0 p-0 cursor-pointer uppercase"
-            >
-              <option value="none">OFF</option>
-              <option value="1/4">1/4</option>
-              <option value="1/8">1/8</option>
-              <option value="1/16">1/16</option>
-              <option value="1/32">1/32</option>
-            </select>
-          </div>
-          {recorderState === RecorderState.RECORDING && (
-            <>
-              <div className="h-8 w-px bg-studio-800" />
-              <div className="flex flex-col items-center">
-                <span className="text-[9px] font-bold text-studio-danger uppercase tracking-widest animate-pulse">Recording</span>
-                <span className="text-lg font-mono text-studio-danger leading-none">
-                  {getRecordingTimer() || 'REC'}
-                </span>
-              </div>
-            </>
-          )}
-        </div>
-
-        <div className="flex items-center gap-3">
-          {audioState !== 'running' && (
-              <button 
-                  onClick={connectAudio}
-                  className="flex items-center gap-2 px-4 py-2 bg-studio-accent text-white rounded-lg text-xs font-black shadow-lg shadow-studio-accent/20 hover:scale-105 transition-all"
-              >
-                  <Headphones size={14} />
-                  <span className="hidden sm:inline">CONNECT AUDIO</span>
-              </button>
-          )}
-          <button 
-            onClick={loadProject}
-            className="flex items-center gap-2 px-4 py-2 bg-studio-800 hover:bg-studio-700 text-white rounded-lg text-xs font-bold border border-studio-700 transition-all"
-          >
-            <Upload size={14} /> <span className="hidden sm:inline">LOAD</span>
-          </button>
-          <button 
-            onClick={saveProject}
-            disabled={tracks.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-studio-800 hover:bg-studio-700 text-white rounded-lg text-xs font-bold border border-studio-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Activity size={14} /> <span className="hidden sm:inline">SAVE</span>
-          </button>
-          <button 
-            onClick={exportSong}
-            disabled={tracks.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-studio-800 hover:bg-studio-700 text-white rounded-lg text-xs font-bold border border-studio-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Activity size={14} /> <span className="hidden sm:inline">EXPORT MIX</span>
-          </button>
-          <button 
-            onClick={handleImportClick}
-            className="flex items-center gap-2 px-4 py-2 bg-studio-800 hover:bg-studio-700 text-white rounded-lg text-xs font-bold border border-studio-700 transition-all"
-          >
-            <Upload size={14} /> <span className="hidden sm:inline">IMPORT BEAT</span>
-          </button>
-          <button 
-            onClick={() => setIsAddTrackOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-studio-800 hover:bg-studio-700 text-white rounded-lg text-xs font-bold border border-studio-700 transition-all"
-          >
-            <Plus size={14} /> <span className="hidden sm:inline">ADD TRACK</span>
-          </button>
-          <button 
-            onClick={() => setShowRecSettings(!showRecSettings)}
-            className={`p-2 rounded-lg border transition-all ${showRecSettings ? 'bg-studio-accent border-studio-accent text-white shadow-lg shadow-studio-accent/20' : 'bg-studio-800 border-studio-700 text-studio-500 hover:text-white'}`}
-          >
-            <Sliders size={18} />
-          </button>
-        </div>
-      </header>
-
-      <main className="flex-1 flex overflow-hidden relative">
-        {/* Left Sidebar - Recording Settings */}
-        <AnimatePresence>
-          {showRecSettings && (
-            <motion.aside 
-              initial={{ x: -300, opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: -300, opacity: 0 }}
-              className="w-72 bg-studio-900 border-r border-studio-800 flex flex-col z-30 shadow-2xl"
-            >
-              <div className="p-6 flex flex-col gap-8 overflow-y-auto">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-black text-white tracking-widest uppercase">Input Settings</h2>
-                  <button onClick={() => setShowRecSettings(false)} className="text-studio-500 hover:text-white">
-                    <X size={18} />
-                  </button>
-                </div>
-
-                {/* Meter Section */}
-                <div className="flex flex-col gap-3">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[10px] font-black text-studio-500 uppercase tracking-widest">Input Level</label>
-                    <button 
-                      onClick={toggleMicTest}
-                      className={`text-[9px] px-2 py-0.5 rounded font-bold border transition-all ${isMicTestActive ? 'bg-studio-accent border-studio-accent text-white' : 'border-studio-700 text-studio-500'}`}
-                    >
-                      {isMicTestActive ? 'STOP TEST' : 'TEST INPUT'}
-                    </button>
-                  </div>
-                  
-                  {/* Live Waveform */}
-                  <div className="relative">
-                    <WaveformVisualizer isActive={isMicTestActive || recorderState === RecorderState.RECORDING} audioEngine={audioEngine} />
-                    
-                    {/* Level Overlay */}
-                    <div className="absolute right-0 top-0 bottom-0 w-1.5 bg-studio-950/50 rounded-r-lg overflow-hidden flex flex-col justify-end">
-                       <motion.div 
-                          className={`w-full transition-all duration-75 ${inputLevel > 0.9 ? 'bg-studio-danger' : (inputLevel > 0.7 ? 'bg-studio-warning' : 'bg-studio-success')}`}
-                          style={{ height: `${Math.min(inputLevel * 100, 100)}%` }}
-                        />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Device Selection */}
-                <div className="flex flex-col gap-3">
-                  <label className="text-[10px] font-black text-studio-500 uppercase tracking-widest flex items-center gap-2">
-                    <Mic size={12} /> Source Device
-                  </label>
-                  <select 
-                    value={selectedDeviceId} 
-                    onChange={(e) => setSelectedDeviceId(e.target.value)}
-                    className="bg-studio-950 border border-studio-800 rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none focus:border-studio-accent w-full appearance-none cursor-pointer"
-                  >
-                    {inputDevices.length === 0 && <option value="">Default Input</option>}
-                    {inputDevices.map(d => (
-                        <option key={d.deviceId} value={d.deviceId}>{d.label || `Audio Input ${d.deviceId.slice(0,5)}...`}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Recording Options */}
-                <div className="flex flex-col gap-6">
-                  <div className="flex flex-col gap-3">
-                    <label className="text-[10px] font-black text-studio-500 uppercase tracking-widest flex items-center gap-2">
-                      <Timer size={12} /> Pre-Count & Duration
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button 
-                        onClick={() => setPreCount(!preCount)}
-                        className={`px-3 py-2 rounded-lg text-[10px] font-bold border transition-all ${preCount ? 'bg-studio-accent/10 border-studio-accent text-studio-accent' : 'bg-studio-950 border-studio-800 text-studio-500'}`}
-                      >
-                        4-BEAT INTRO
-                      </button>
-                      <select 
-                        value={recordDuration}
-                        onChange={(e) => setRecordDuration(e.target.value as any)}
-                        className="bg-studio-950 border border-studio-800 rounded-lg px-3 py-2 text-[10px] font-bold text-white focus:outline-none focus:border-studio-accent appearance-none cursor-pointer text-center"
-                      >
-                        <option value="free">FREE REC</option>
-                        <option value="4">4 BARS</option>
-                        <option value="8">8 BARS</option>
-                        <option value="16">16 BARS</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-3">
-                    <label className="text-[10px] font-black text-studio-500 uppercase tracking-widest flex items-center gap-2">
-                      <Headphones size={12} /> Monitoring
-                    </label>
-                    <div className="flex items-center justify-between bg-studio-950 border border-studio-800 rounded-lg p-3">
-                      <span className="text-xs font-bold text-zinc-400">Direct Monitor</span>
-                      <button 
-                        onClick={() => setIsMonitoring(!isMonitoring)}
-                        className={`w-10 h-5 rounded-full relative transition-colors ${isMonitoring ? 'bg-studio-accent' : 'bg-studio-800'}`}
-                      >
-                        <motion.div 
-                          animate={{ x: isMonitoring ? 22 : 2 }}
-                          className="absolute top-1 w-3 h-3 rounded-full bg-white shadow-sm" 
-                        />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-3">
-                    <label className="text-[10px] font-black text-studio-500 uppercase tracking-widest flex items-center gap-2">
-                      <Music size={12} /> Mixdown Recording
-                    </label>
-                    <div className="flex items-center justify-between bg-studio-950 border border-studio-800 rounded-lg p-3">
-                      <div className="flex flex-col">
-                        <span className="text-xs font-bold text-zinc-400">Record Beat + Voice</span>
-                        <span className="text-[9px] text-studio-500">Record master output into track</span>
-                      </div>
-                      <button 
-                        onClick={() => setRecordMaster(!recordMaster)}
-                        className={`w-10 h-5 rounded-full relative transition-colors ${recordMaster ? 'bg-studio-accent' : 'bg-studio-800'}`}
-                      >
-                        <motion.div 
-                          animate={{ x: recordMaster ? 22 : 2 }}
-                          className="absolute top-1 w-3 h-3 rounded-full bg-white shadow-sm" 
-                        />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-3">
-                    <div className="flex justify-between items-center">
-                      <label className="text-[10px] font-black text-studio-500 uppercase tracking-widest flex items-center gap-2">
-                        <Gauge size={12} /> Input Gain
-                      </label>
-                      <span className="text-[10px] font-mono text-studio-accent font-bold">{inputGain.toFixed(1)}x</span>
-                    </div>
-                    <input 
-                        type="range" min="0" max="2" step="0.1" 
-                        value={inputGain}
-                        onChange={(e) => setInputGain(parseFloat(e.target.value))}
-                        className="w-full"
-                    />
-                  </div>
-                </div>
-              </div>
-            </motion.aside>
-          )}
-        </AnimatePresence>
-
-        {/* Timeline Area */}
-        <div 
-          className="flex-1 flex flex-col overflow-hidden bg-studio-950 relative"
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          <AnimatePresence>
-            {isDraggingFile && (
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-0 z-50 bg-studio-accent/20 backdrop-blur-sm border-4 border-dashed border-studio-accent flex items-center justify-center pointer-events-none"
-              >
-                <div className="bg-studio-900 p-8 rounded-2xl shadow-2xl flex flex-col items-center gap-4">
-                  <Upload size={48} className="text-studio-accent animate-bounce" />
-                  <h2 className="text-2xl font-black text-white tracking-tight">DROP AUDIO FILE HERE</h2>
-                  <p className="text-studio-400 font-bold uppercase tracking-widest text-xs">Import as new track</p>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <div className="flex-1 overflow-auto relative no-scrollbar">
-             {/* Time Ruler */}
-             <div 
-                className="sticky top-0 h-10 bg-studio-900/80 backdrop-blur-sm border-b border-studio-800 z-30 flex items-end min-w-[5000px] cursor-pointer hover:bg-studio-800/30 transition-colors" 
-                style={{ paddingLeft: '224px' }}
-                onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const x = e.clientX - rect.left + e.currentTarget.scrollLeft - 224; // Subtract sidebar width
-                    const newTime = Math.max(0, x / 50); // 50px per second
-                    handleSeek(newTime);
-                }}
-             >
-                 {Array.from({ length: 100 }).map((_, i) => (
-                     <div key={i} className="flex-shrink-0 w-[50px] border-l border-studio-800/50 h-4 relative pointer-events-none">
-                         <span className="absolute -top-6 left-1 text-[10px] font-mono text-studio-500 font-bold select-none">{i}s</span>
-                         {Array.from({ length: 4 }).map((_, j) => (
-                           <div key={j} className="absolute bottom-0 h-1.5 border-l border-studio-800/30" style={{ left: `${(j + 1) * 12.5}px` }} />
-                         ))}
-                     </div>
-                 ))}
-             </div>
-
-             <div className="absolute inset-0 pointer-events-none opacity-[0.03]" 
-                style={{ 
-                    backgroundImage: 'linear-gradient(to right, #ffffff 1px, transparent 1px)', 
-                    backgroundSize: '50px 100%', 
-                    width: '5000px',
-                    top: '40px',
-                    left: '224px'
-                }} 
-             />
-             
-             {tracks.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-studio-700 gap-6" style={{ paddingLeft: '224px' }}>
-                    <motion.div 
-                      initial={{ scale: 0.8, opacity: 0 }}
-                      animate={{ scale: 1, opacity: 1 }}
-                      className="w-24 h-24 rounded-3xl bg-studio-900 border border-studio-800 flex items-center justify-center shadow-2xl"
-                    >
-                        <Music size={48} className="text-studio-800" />
-                    </motion.div>
-                    <div className="text-center flex flex-col items-center gap-4">
-                      <div>
-                        <p className="text-lg font-black text-studio-800 tracking-tight">EMPTY PROJECT</p>
-                        <p className="text-sm text-studio-700">Import a beat or add a vocal track to start</p>
-                      </div>
-                      <button 
-                        onClick={handleImportClick}
-                        className="flex items-center gap-2 px-6 py-3 bg-studio-accent text-white rounded-xl text-sm font-black shadow-lg shadow-studio-accent/20 hover:scale-105 transition-all"
-                      >
-                        <Upload size={18} /> IMPORT BEAT
-                      </button>
-                    </div>
-                </div>
-             ) : (
-                <div className="py-4 pr-4 pb-32 min-w-[5000px] flex flex-col gap-2">
-                    {tracks.map(track => (
-                        <TrackItem 
-                            key={track.id} 
-                            track={track} 
-                            onUpdate={handleUpdateTrack}
-                            onDelete={deleteTrack}
-                            onSelect={setSelectedTrackId}
-                            onSplit={splitTrack}
-                            isSelected={selectedTrackId === track.id}
-                            currentTime={playbackTime}
-                            onSeek={handleSeek}
-                            bpm={bpm}
-                            quantization={quantization}
-                            isRecording={recorderState === RecorderState.RECORDING}
-                        />
-                    ))}
-                </div>
-             )}
-
-             {/* Playback Cursor */}
-             <div 
-                className="absolute top-0 bottom-0 w-px bg-studio-accent z-40 pointer-events-none shadow-[0_0_10px_rgba(139,92,246,0.8)]"
-                style={{ left: `${playbackTime * 50 + 224}px` }} // 50px per second + 224px offset
-             >
-                <div className="w-3 h-3 bg-studio-accent rounded-full -ml-[5.5px] mt-7 shadow-lg" />
-             </div>
-          </div>
-
-          {/* Bottom Mixer Section */}
-          <Mixer 
-            selectedTrack={selectedTrack} 
-            onUpdateTrack={handleUpdateTrack}
-            masteringSettings={masteringSettings}
-            onUpdateMastering={setMasteringSettings}
-            trackCount={tracks.length}
-          />
-        </div>
-      </main>
-
-      {/* Modals / Overlays */}
-      <AnimatePresence>
-        {isAddTrackOpen && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setIsAddTrackOpen(false)}
-              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="w-full max-w-md bg-studio-900 border border-studio-800 rounded-2xl shadow-2xl p-8 relative z-10"
-            >
-              <h2 className="text-xl font-black text-white mb-6 tracking-tight">ADD NEW TRACK</h2>
-              <div className="grid grid-cols-2 gap-4">
-                <button 
-                  onClick={() => addTrack('beat')}
-                  className="flex flex-col items-center gap-4 p-6 bg-studio-950 border border-studio-800 rounded-xl hover:border-studio-accent hover:bg-studio-accent/5 transition-all group"
-                >
-                  <div className="w-12 h-12 rounded-full bg-studio-800 flex items-center justify-center group-hover:bg-studio-accent group-hover:text-white transition-all">
-                    <Upload size={24} />
-                  </div>
-                  <div className="text-center">
-                    <p className="font-bold text-white">IMPORT BEAT</p>
-                    <p className="text-[10px] text-studio-500 uppercase font-bold tracking-widest mt-1">WAV, MP3, OGG</p>
-                  </div>
-                </button>
-                <button 
-                  onClick={() => addTrack('audio')}
-                  className="flex flex-col items-center gap-4 p-6 bg-studio-950 border border-studio-800 rounded-xl hover:border-studio-accent hover:bg-studio-accent/5 transition-all group"
-                >
-                  <div className="w-12 h-12 rounded-full bg-studio-800 flex items-center justify-center group-hover:bg-studio-accent group-hover:text-white transition-all">
-                    <Mic size={24} />
-                  </div>
-                  <div className="text-center">
-                    <p className="font-bold text-white">VOCAL TRACK</p>
-                    <p className="text-[10px] text-studio-500 uppercase font-bold tracking-widest mt-1">RECORD DIRECTLY</p>
-                  </div>
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
+      {/* Hidden File Inputs (Accepts MP3, WAV, AAC, etc.) */}
       <input 
-          ref={fileInputRef}
-          type="file" 
-          accept="audio/*" 
-          onChange={handleFileUpload} 
-          className="hidden" 
+        ref={beatFileInputRef}
+        type="file" 
+        accept="audio/*,audio/mpeg,audio/mp3,.mp3,.wav,.ogg,.m4a,.flac,.aac" 
+        className="hidden" 
+        onChange={handleBeatFileSelected}
+      />
+      <input 
+        ref={refFileInputRef}
+        type="file" 
+        accept="audio/*,audio/mpeg,audio/mp3,.mp3,.wav,.ogg,.m4a,.flac,.aac" 
+        className="hidden" 
+        onChange={handleReferenceFileSelected}
+      />
+
+      {/* Studio Workstation Interface matching the exact user reference design */}
+      <StudioWorkstation 
+        project={project}
+        selectedTrackId={selectedTrackId}
+        onSelectTrack={setSelectedTrackId}
+        onUpdateTrack={handleUpdateTrack}
+        onDeleteTrack={handleDeleteTrack}
+        onAddTrack={handleAddTrack}
+        isPlaying={isPlaying}
+        playbackTime={playbackTime}
+        recorderState={recorderState}
+        onTogglePlay={handleTogglePlay}
+        onToggleRecord={handleToggleRecord}
+        onStop={handleStop}
+        onSeek={handleSeek}
+        onReturnToZero={handleReturnToZero}
+        bpm={project.bpm}
+        onBpmChange={(bpm) => setProject(p => ({ ...p, bpm }))}
+        onTapTempo={handleTapTempo}
+        onSplitClip={handleSplitClip}
+        onCopyClip={handleCopyClip}
+        onCutClip={handleCutClip}
+        onDuplicateClip={handleDuplicateClip}
+        onPasteClip={handlePasteClip}
+        onDeleteClip={handleDeleteClip}
+        canPaste={clipboardClip !== null}
+        clipboardClipName={clipboardClip?.name || null}
+        masterVolume={project.masteringSettings.gain}
+        onUpdateMasterVolume={handleUpdateMasterVolume}
+        onImportBeat={() => beatFileInputRef.current?.click()}
+        onImportFile={handleImportAudioFile}
+        onOpenExport={() => setIsExportModalOpen(true)}
+        onOpenProjects={() => setIsProjectModalOpen(true)}
+        onToggleAiPanel={() => setIsAiPanelOpen(!isAiPanelOpen)}
+        isAiPanelOpen={isAiPanelOpen}
+        trackLevels={trackLevels}
+        isDarkMode={isDarkMode}
+        onToggleTheme={handleToggleTheme}
+      />
+
+      {/* Gemini AI Assistant Drawer */}
+      <AIAssistantPanel 
+        isOpen={isAiPanelOpen}
+        onClose={() => setIsAiPanelOpen(false)}
+        selectedTrack={selectedTrack}
+        onApplyTrackEffects={(trackId, fx) => {
+          handleUpdateTrack(trackId, { effects: { ...selectedTrack!.effects, ...fx } });
+        }}
+        masteringSettings={project.masteringSettings}
+        onApplyMastering={(m) => setProject(p => ({ ...p, masteringSettings: m }))}
+        onApplyMarkers={(mks) => setProject(p => ({ ...p, markers: mks }))}
+        bpm={project.bpm}
+        trackCount={project.tracks.length}
+        totalDuration={project.tracks[0]?.clips[0]?.duration || 90}
+      />
+
+      {/* Export Mixdown Modal */}
+      <ExportModal 
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        projectName={project.name}
+        onExport={handleExportMixdown}
+        isLoopEnabled={project.loopSettings.enabled}
+      />
+
+      {/* Project Sessions Modal */}
+      <ProjectModal 
+        isOpen={isProjectModalOpen}
+        onClose={() => setIsProjectModalOpen(false)}
+        currentProjectId={project.id}
+        onNewProject={(name, bpm) => {
+          setProject({
+            id: `project_${Date.now()}`,
+            name,
+            bpm,
+            timeSignature: [4, 4],
+            sampleRate: 44100,
+            latencyCompensationMs: 35,
+            markers: [{ id: 'm1', name: 'Intro', time: 0, color: '#6366f1' }],
+            tracks: [
+              {
+                id: 'track_vocal_1',
+                name: 'Lead Vocal',
+                type: 'vocal',
+                vocalType: 'main',
+                color: '#ec4899',
+                isMuted: false,
+                isSolo: false,
+                isArmed: true,
+                volume: 1.0,
+                pan: 0,
+                effects: { ...DEFAULT_EFFECTS },
+                clips: [],
+                takes: []
+              }
+            ],
+            loopSettings: { enabled: false, start: 0, end: 16 },
+            masteringSettings: { ...DEFAULT_MASTERING },
+            reverbBus: { ...DEFAULT_REVERB },
+            delayBus: { ...DEFAULT_DELAY },
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          });
+          setSelectedTrackId('track_vocal_1');
+          setPlaybackTime(0);
+        }}
+        onLoadProject={async (id) => {
+          const loaded = await projectDb.getProject(id);
+          if (loaded) {
+            setProject(loaded);
+            setSelectedTrackId(loaded.tracks[0]?.id || null);
+            setPlaybackTime(0);
+          }
+        }}
+        onLoadDemoProject={async () => {
+          const ctx = await audioEngine.init();
+          const demoBuffer = generateSyntheticDemoBeat(ctx, 140);
+          const peaks = audioEngine.getWaveformData(demoBuffer, 180);
+          const clipId = `clip_demo_${Date.now()}`;
+          audioEngine.setBuffer(clipId, demoBuffer);
+
+          setProject({
+            id: `demo_${Date.now()}`,
+            name: '808 Trap Demo Session',
+            bpm: 140,
+            timeSignature: [4, 4],
+            sampleRate: 44100,
+            latencyCompensationMs: 35,
+            markers: [
+              { id: 'm1', name: 'Intro', time: 0, color: '#6366f1' },
+              { id: 'm2', name: 'Verse', time: 6.85, color: '#3b82f6' },
+              { id: 'm3', name: 'Hook', time: 13.71, color: '#f59e0b' }
+            ],
+            tracks: [
+              {
+                id: 'track_beat',
+                name: '808 Trap Beat',
+                type: 'beat',
+                color: '#6366f1',
+                isMuted: false,
+                isSolo: false,
+                isArmed: false,
+                volume: 0.9,
+                pan: 0,
+                effects: { ...DEFAULT_EFFECTS },
+                clips: [{
+                  id: clipId,
+                  trackId: 'track_beat',
+                  name: '808 Beat Loop',
+                  start: 0,
+                  duration: demoBuffer.duration,
+                  offset: 0,
+                  gain: 1.0,
+                  fadeIn: 0,
+                  fadeOut: 0,
+                  isMuted: false,
+                  isReversed: false,
+                  peaks,
+                  audioBuffer: demoBuffer
+                }],
+                takes: []
+              },
+              {
+                id: 'track_vocal_1',
+                name: 'Lead Vocal',
+                type: 'vocal',
+                vocalType: 'main',
+                color: '#ec4899',
+                isMuted: false,
+                isSolo: false,
+                isArmed: true,
+                volume: 1.0,
+                pan: 0,
+                effects: { 
+                  ...DEFAULT_EFFECTS, 
+                  autotune: { enabled: true, key: 'C', scale: 'minor', speed: 15, amount: 90 } 
+                },
+                clips: [],
+                takes: []
+              }
+            ],
+            loopSettings: { enabled: true, start: 0, end: demoBuffer.duration },
+            masteringSettings: { ...DEFAULT_MASTERING },
+            reverbBus: { ...DEFAULT_REVERB },
+            delayBus: { ...DEFAULT_DELAY },
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          });
+          setSelectedTrackId('track_vocal_1');
+          setPlaybackTime(0);
+        }}
       />
     </div>
   );
-}
-
-// Helper icon
-function Activity({ size, className }: { size: number, className?: string }) {
-    return (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-        </svg>
-    );
 }
